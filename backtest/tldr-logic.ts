@@ -23,7 +23,7 @@ export const MAX_CONTEXT_CHECKPOINTS = 8;
 export const TLDR_TARGET_SUMMARY_CHARS = 60;
 export const MAX_SAFE_TLDR_CHARS = 240;
 export const TLDR_DISPLAY_UPDATE_INTERVAL_MS = 1_200;
-export const NORMAL_CHECKPOINT_QUIET_MS = 700;
+export const NORMAL_CHECKPOINT_QUIET_MS = 1_500;
 export const NORMAL_CHECKPOINT_MAX_WAIT_MS = 2_500;
 
 const ANSI_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;
@@ -339,6 +339,12 @@ export function checkpointSystemPrompt(displayPriority: TldrDisplayPriority): st
 Describe the work progress as if a human developer were doing it.
 Focus on the task activity and current outcome, not agent mechanics.
 Do not mention tools, tool calls, prompts, messages, model output, or implementation details.
+Do not start with tool-name verbs such as Read, Reading, Grep, Listing, Counting, Extracting, Displaying, Editing, Writing, Running, Publishing.
+Use human-developer verbs instead: Reviewing, Investigating, Exploring, Updating, Refining, Fixing, Implementing, Wrapping up.
+Do not use file paths, file extensions, code identifiers, package names, or version strings.
+Do not use backticks, asterisks, underscores, quotes, or any markdown formatting.
+Do not append filler suffixes such as "with success", "successfully", or "completed successfully".
+Do not claim progress or completion that is not present in the activity.
 Use the prior TLDRs for context and the new activity for the update.
 Summarize the current state of work; do not narrate the history.
 If context is sparse, still summarize the available activity.
@@ -349,6 +355,19 @@ Prefer verb + direct object. Include outcome only if important.
 Do not address the user.
 Output only the status fragment itself. No prefixes, labels, bullets, or quotes.
 Plain text only; no markdown, JSON, code, file paths, or tool names.
+
+Good examples:
+- Reviewing footer summary behavior
+- Investigating live TLDR regressions
+- Refining sanitizer for stray prefixes
+- Wrapping up extension release
+
+Bad examples:
+- Editing extensions/status-footer.ts with success.
+- Reading status-footer file completed successfully.
+- Publishing \`pi-bar@0.3.3\` to npm.
+- Grepping for sanitizeTldrText callers.
+
 ${tenseInstruction}`;
 }
 
@@ -458,6 +477,8 @@ function stripTerminalControls(text: string): string {
 const LEAKED_PREFIX_PATTERN =
 	/^\s*(?:[-*•]\s*)?(?:(?:through\s+activity|activity|checkpoint)\s+\d+\s*[:.\-—–]\s*|(?:tldr|summary)\s*[:.\-—–]\s*)+/i;
 const LEADING_PUNCT_PATTERN = /^[\s\-—–•*:#.,;]+/;
+const TRAILING_PUNCT_PATTERN = /[\s\-—–•*:#.,;]+$/;
+
 function stripLeakedScaffolding(text: string): string {
 	let cleaned = text;
 	let previous: string;
@@ -468,8 +489,56 @@ function stripLeakedScaffolding(text: string): string {
 	} while (cleaned !== previous && cleaned.length > 0);
 	return cleaned;
 }
+
+function stripMarkdownFormatting(text: string): string {
+	return text
+		.replace(/```+/g, "")
+		.replace(/`+/g, "")
+		.replace(/(^|[^\\])([*_~]{1,3})(.+?)\2/g, "$1$3");
+}
+
+const FILE_PATH_PATTERN =
+	/(?:\b[\w./@-]+\.(?:ts|tsx|js|jsx|mjs|cjs|md|json|yml|yaml|toml|lock|sh|py|rs|go|html|css))\b/g;
+const PACKAGE_VERSION_PATTERN = /\b[\w./@-]+@\d[\w.+-]*\b/g;
+const VERSION_PATTERN = /\bv?\d+\.\d+(?:\.\d+(?:[-+][\w.]+)?)?\b/g;
+
+function stripIdentifierLeaks(text: string): string {
+	return text
+		.replace(PACKAGE_VERSION_PATTERN, "")
+		.replace(FILE_PATH_PATTERN, "")
+		.replace(VERSION_PATTERN, "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+const SUCCESS_SUFFIX_PATTERN =
+	/[\s,;:—–-]*(?:with\s+success|completed\s+successfully|finished\s+successfully|done\s+successfully|successfully\s+completed|successfully\s+finished|successfully)\s*[.!?]*\s*$/i;
+
+function stripSuccessSuffix(text: string): string {
+	let cleaned = text;
+	let stripped = false;
+	while (true) {
+		const next = cleaned.replace(SUCCESS_SUFFIX_PATTERN, "").trim();
+		if (next === cleaned || next.length === 0) break;
+		cleaned = next;
+		stripped = true;
+	}
+	if (stripped) cleaned = cleaned.replace(TRAILING_PUNCT_PATTERN, "").trim();
+	return cleaned;
+}
+
+export function isNearDuplicateTldr(current: string, previous: string): boolean {
+	if (!previous) return false;
+	const norm = (s: string) =>
+		s.toLowerCase().replace(/[\p{P}\p{S}]+/gu, " ").replace(/\s+/gu, " ").trim();
+	return norm(current) === norm(previous);
+}
+
 export function sanitizeTldrText(text: string, maxChars = MAX_SAFE_TLDR_CHARS): string {
 	const stripped = stripTerminalControls(text);
-	const cleaned = stripLeakedScaffolding(stripped) || stripped;
-	return truncateText(cleaned, maxChars);
+	const withoutMarkdown = stripMarkdownFormatting(stripped);
+	const withoutScaffolding = stripLeakedScaffolding(withoutMarkdown) || withoutMarkdown;
+	const withoutLeaks = stripIdentifierLeaks(withoutScaffolding) || withoutScaffolding;
+	const withoutSuccess = stripSuccessSuffix(withoutLeaks) || withoutLeaks;
+	return truncateText(withoutSuccess, maxChars);
 }

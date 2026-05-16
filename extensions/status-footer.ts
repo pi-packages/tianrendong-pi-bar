@@ -1009,10 +1009,40 @@ class FooterTldrEngine {
 }
 
 function checkpointSystemPrompt(job: TldrCheckpointJob): string {
-	const tenseInstruction =
-		job.displayPriority === "final"
-			? "Start with a past-tense verb."
-			: "Start with a present-tense -ing verb.";
+	// Tense + exemplars vary by priority. Final TLDRs describe completed turns;
+	// using -ing examples for final caused all final TLDRs to slip back into
+	// present-progressive even though the literal instruction said past tense.
+	// Immediate TLDRs cover a brand-new user request; they need a rephrase
+	// directive instead of generic filler like "Continuing with task".
+	let tenseInstruction: string;
+	let goodExamples: string;
+	if (job.displayPriority === "final") {
+		tenseInstruction = "Start with a past-tense verb describing what was completed.";
+		goodExamples = [
+			"- Updated footer summary behavior",
+			"- Investigated live TLDR regressions",
+			"- Refined sanitizer for stray prefixes",
+			"- Wrapped up extension release",
+		].join("\n");
+	} else if (job.displayPriority === "immediate") {
+		tenseInstruction =
+			"Rephrase the user's new request as a concise present-progressive task clause. Do not write \"Continuing\", \"Investigating user input\", or any generic filler.";
+		goodExamples = [
+			"- Reviewing footer summary behavior",
+			"- Investigating live TLDR regressions",
+			"- Refining sanitizer for stray prefixes",
+			"- Preparing extension release",
+		].join("\n");
+	} else {
+		tenseInstruction = "Start with a present-tense -ing verb describing current work.";
+		goodExamples = [
+			"- Reviewing footer summary behavior",
+			"- Investigating live TLDR regressions",
+			"- Refining sanitizer for stray prefixes",
+			"- Wrapping up extension release",
+		].join("\n");
+	}
+
 	// Frame the model as a human developer describing visible work, not an agent
 	// summarizing its own mechanics. The banned phrases and few-shot examples
 	// fix concrete regressions observed in backtests: tool-name verbs, success
@@ -1021,8 +1051,8 @@ function checkpointSystemPrompt(job: TldrCheckpointJob): string {
 Describe the work progress as if a human developer were doing it.
 Focus on the task activity and current outcome, not agent mechanics.
 Do not mention tools, tool calls, prompts, messages, model output, or implementation details.
-Do not start with tool-name verbs such as Read, Reading, Grep, Listing, Counting, Extracting, Displaying, Editing, Writing, Running, Publishing.
-Use human-developer verbs instead: Reviewing, Investigating, Exploring, Updating, Refining, Fixing, Implementing, Wrapping up.
+Do not start with tool-narration verbs such as Read, Reading, Grep, Listing, Counting, Extracting, Displaying, Editing, Writing, Running, Publishing, Capturing, Verifying, Validating, Checking, Confirming, Searching, Finding.
+Use human-developer verbs instead: Reviewing, Investigating, Exploring, Updating, Refining, Fixing, Implementing, Wrapping up, Bumping, Releasing.
 Do not use file paths, file extensions, code identifiers, package names, or version strings.
 Do not use backticks, asterisks, underscores, quotes, or any markdown formatting.
 Do not append filler suffixes such as "with success", "successfully", or "completed successfully".
@@ -1039,16 +1069,15 @@ Output only the status fragment itself. No prefixes, labels, bullets, or quotes.
 Plain text only; no markdown, JSON, code, file paths, or tool names.
 
 Good examples:
-- Reviewing footer summary behavior
-- Investigating live TLDR regressions
-- Refining sanitizer for stray prefixes
-- Wrapping up extension release
+${goodExamples}
 
 Bad examples:
 - Editing extensions/status-footer.ts with success.
 - Reading status-footer file completed successfully.
 - Publishing \`pi-bar@0.3.3\` to npm.
 - Grepping for sanitizeTldrText callers.
+- Continuing with task progression.
+- Investigating user input responses.
 
 ${tenseInstruction}`;
 }
@@ -1236,6 +1265,26 @@ function stripIdentifierLeaks(text: string): string {
 		.trim();
 }
 
+// After identifier removal the sentence often has a dangling preposition like
+// "Bumping version to for publishing" (was "to 0.3.2 for publishing") or a
+// trailing "to"/"version". Run in a fix-point loop so chained leftovers (e.g.
+// "to version") collapse cleanly.
+const DANGLING_TRAILING_PREP_PATTERN =
+	/\s+(?:to|at|as|of|by|for|in|on|with|from|version|v)\s*[.!?,;:]?\s*$/i;
+const DANGLING_PREP_CHAIN_PATTERN =
+	/\b(to|at|as|of|by|from|version|v)\s+(for|in|on|with|from|after|before|during|to|at|as|of|by|and|but|or)\b/gi;
+
+function stripDanglingPrepositions(text: string): string {
+	let cleaned = text;
+	let previous: string;
+	do {
+		previous = cleaned;
+		cleaned = cleaned.replace(DANGLING_PREP_CHAIN_PATTERN, "$2");
+		cleaned = cleaned.replace(DANGLING_TRAILING_PREP_PATTERN, "").trim();
+	} while (cleaned !== previous && cleaned.length > 0);
+	return cleaned;
+}
+
 // Trailing filler suffixes observed in backtests:
 //   "... with success.", "... completed successfully.", "... successfully."
 const SUCCESS_SUFFIX_PATTERN =
@@ -1265,7 +1314,8 @@ function sanitizeTldrText(
 	const withoutMarkdown = stripMarkdownFormatting(stripped);
 	const withoutScaffolding = stripLeakedScaffolding(withoutMarkdown) || withoutMarkdown;
 	const withoutLeaks = stripIdentifierLeaks(withoutScaffolding) || withoutScaffolding;
-	const withoutSuccess = stripSuccessSuffix(withoutLeaks) || withoutLeaks;
+	const withoutDangling = stripDanglingPrepositions(withoutLeaks) || withoutLeaks;
+	const withoutSuccess = stripSuccessSuffix(withoutDangling) || withoutDangling;
 	return truncateText(withoutSuccess, maxChars);
 }
 

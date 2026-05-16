@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import {
 	buildCheckpointUserPrompt,
 	checkpointSystemPrompt,
+	isNearDuplicateTldr,
 	MAX_CONTEXT_CHECKPOINTS,
 	NORMAL_CHECKPOINT_MAX_WAIT_MS,
 	NORMAL_CHECKPOINT_QUIET_MS,
@@ -135,7 +136,9 @@ type ReplayPlan = {
 		| { kind: "toolResult"; toolName: string; input: Record<string, unknown>; isError: boolean; content: readonly unknown[]; toolCallId: string }
 		| { kind: "messageEnd"; message: unknown };
 	ts: number; // ms
-	priority: TldrDisplayPriority;
+	// "fact" = record but do not trigger a checkpoint (matches engine >=0.3.27
+	// behavior for tool_call).
+	priority: TldrDisplayPriority | "fact";
 	trigger: string;
 };
 
@@ -165,7 +168,9 @@ function planFromEvents(events: JsonlEvent[]): ReplayPlan[] {
 		}
 
 		if (msg.role === "assistant") {
-			// Capture toolCalls so toolResults can be reconstructed.
+			// Capture toolCalls so toolResults can be reconstructed. tool_call is
+			// recorded as a fact (priority "fact" = no checkpoint fired). Production
+			// engine (>=0.3.27) only fires on tool_result.
 			for (const part of (msg.content ?? []) as any[]) {
 				if (part?.type === "toolCall" && part.id) {
 					callArgs.set(part.id, {
@@ -180,7 +185,7 @@ function planFromEvents(events: JsonlEvent[]): ReplayPlan[] {
 							toolCallId: part.id,
 						},
 						ts,
-						priority: "normal",
+						priority: "fact",
 						trigger: `tool_call ${part.name}`,
 					});
 				}
@@ -309,6 +314,12 @@ async function replay(
 		options.onCheckpoint?.(trace);
 
 		if (trace.tldr) {
+			// Mirror engine: don't "render" near-duplicates; mark them to surface
+			// debouncing wins in the trace.
+			const prev = accepted[accepted.length - 1]?.text ?? "";
+			if (isNearDuplicateTldr(trace.tldr, prev)) {
+				trace.error = "(skipped: near-duplicate of previous TLDR)";
+			}
 			accepted.push({
 				activityIndex,
 				displayPriority: priority,
@@ -374,8 +385,11 @@ async function replay(
 		let activity: { index: number } | undefined;
 		switch (step.op.kind) {
 			case "userMessage":
-				// Engine does NOT reset facts/checkpoints on user message. Only the
-				// rendered footer text clears + pending normal coalescing is dropped.
+				// Engine >=0.3.27: recordUserMessage clears acceptedCheckpoints +
+				// latestAcceptedActivityIndex so prior-turn TLDRs no longer bias the
+				// next turn's prompt. Facts are NOT reset (the new user fact appends).
+				accepted.splice(0);
+				latestAcceptedIndex = 0;
 				pendingNormal = undefined;
 				activity = facts.recordUserMessage(step.op.prompt);
 				break;
@@ -405,12 +419,41 @@ async function replay(
 		}
 		if (!activity) continue;
 
+		if (step.priority === "fact") {
+			// Recorded but not enqueued. Mirrors recordToolCall in engine >=0.3.27.
+			continue;
+		}
 		if (step.priority === "immediate") {
 			pendingNormal = undefined;
 			await fireCheckpoint("immediate", activity.index, step.trigger);
 		} else if (step.priority === "final") {
 			pendingNormal = undefined;
-			await fireCheckpoint("final", activity.index, step.trigger);
+			// Engine renders a literal ("Aborted." / "Stopped: <reason>.") for
+			// failure finals; bypass the LLM here too.
+			const msg = (step.op.kind === "messageEnd" ? step.op.message : undefined) as
+				| { stopReason?: string }
+				| undefined;
+			const stopReason = msg?.stopReason;
+			if (stopReason && stopReason !== "stop") {
+				const literal = stopReason === "aborted" ? "Aborted." : `Stopped: ${stopReason}.`;
+				traces.push({
+					t: activity.index,
+					priority: "final",
+					trigger: `${step.trigger} (literal)`,
+					rawCount: 0,
+					userPrompt: "(bypassed: literal final)",
+					systemPrompt: "(bypassed)",
+					tldr: literal,
+				});
+				options.onCheckpoint?.(traces[traces.length - 1]);
+				// Engine resets after literal final.
+				facts.resetConversation();
+				accepted.splice(0);
+				latestAcceptedIndex = 0;
+				pendingNormal = undefined;
+			} else {
+				await fireCheckpoint("final", activity.index, step.trigger);
+			}
 		} else {
 			pendingNormal = pendingNormal ?? {
 				activityIndex: activity.index,
