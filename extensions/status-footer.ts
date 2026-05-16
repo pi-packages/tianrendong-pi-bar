@@ -91,7 +91,9 @@ const TLDR_TARGET_SUMMARY_CHARS = 60;
 // Burst debouncing on the generation side: coalesce rapid-fire activities into
 // one model call. Quiet window catches short bursts; max wait surfaces progress
 // during continuous activity.
-const NORMAL_CHECKPOINT_QUIET_MS = 700;
+// Quiet window long enough to let tool_result land before flushing, so the
+// model summarizes the completed outcome instead of guessing from tool_call.
+const NORMAL_CHECKPOINT_QUIET_MS = 1_500;
 const NORMAL_CHECKPOINT_MAX_WAIT_MS = 2_500;
 // Defensive ceiling: even if the model ignores the length instruction, never
 // blast a large payload into the footer.
@@ -650,7 +652,14 @@ class FooterTldrEngine {
 	}
 
 	recordUserMessage(ctx: ExtensionContext, prompt: string): void {
+		// A new user turn replaces the entire visible TLDR context, so wipe both
+		// the rendered text and the prior-turn checkpoint context that feeds the
+		// model. Carrying old checkpoints biased the next turn's phrasing toward
+		// the previous task.
 		this.currentText = null;
+		this.lastRenderedText = "";
+		this.acceptedCheckpoints.splice(0);
+		this.latestAcceptedActivityIndex = 0;
 		this.requestRender();
 		this.enqueue(ctx, this.facts.recordUserMessage(prompt));
 	}
@@ -661,10 +670,14 @@ class FooterTldrEngine {
 	}
 
 	recordToolCall(
-		ctx: ExtensionContext,
+		_ctx: ExtensionContext,
 		event: { toolName: string; input?: Record<string, unknown>; toolCallId?: string },
 	): void {
-		this.enqueue(ctx, this.facts.recordToolCall(event));
+		// Record the fact so a subsequent checkpoint sees the tool was started,
+		// but DO NOT enqueue. tool_call alone has no outcome; flushing here
+		// before tool_result arrives makes the model hallucinate "completed
+		// successfully". The tool_result event triggers the actual checkpoint.
+		this.facts.recordToolCall(event);
 	}
 
 	recordToolResult(
@@ -689,7 +702,31 @@ class FooterTldrEngine {
 			this.startFreshRun();
 			return;
 		}
+
+		// Failure/aborted finals have no narratable content. A model call here
+		// fabricates a reason; render a deterministic literal instead.
+		if (result.activityType === "assistant_failure") {
+			const stopReason = extractStopReason(message);
+			this.renderLiteralFinal(stopReason);
+			this.facts.resetConversation();
+			this.startFreshRun();
+			return;
+		}
+
 		this.enqueue(ctx, result);
+	}
+
+	private renderLiteralFinal(stopReason: string | undefined): void {
+		this.clearPendingDisplay();
+		this.clearPendingNormalCheckpoint();
+		this.checkpointQueue.splice(0);
+		this.abortInFlightCheckpoint();
+		const literal = stopReason === "aborted" ? "Aborted." : `Stopped: ${stopReason ?? "error"}.`;
+		this.currentText = literal;
+		this.lastRenderedText = literal;
+		this.lastRenderedActivityIndex = this.facts.latestActivityIndex();
+		this.lastDisplayAt = performance.now();
+		this.requestRender();
 	}
 
 	private startFreshRun(): void {
@@ -930,6 +967,13 @@ class FooterTldrEngine {
 	private renderCheckpoint(checkpoint: TldrCheckpoint): void {
 		if (checkpoint.activityIndex <= this.lastRenderedActivityIndex) return;
 		if (checkpoint.text === this.lastRenderedText) return;
+		// Skip near-duplicates: a burst of consecutive checkpoints often produces
+		// the same action fragment with only punctuation/casing differences. They
+		// flash visibly in the footer without adding information.
+		if (isNearDuplicateTldr(checkpoint.text, this.lastRenderedText)) {
+			this.lastRenderedActivityIndex = checkpoint.activityIndex;
+			return;
+		}
 		this.lastRenderedActivityIndex = checkpoint.activityIndex;
 		this.lastRenderedText = checkpoint.text;
 		this.lastDisplayAt = performance.now();
@@ -970,12 +1014,19 @@ function checkpointSystemPrompt(job: TldrCheckpointJob): string {
 			? "Start with a past-tense verb."
 			: "Start with a present-tense -ing verb.";
 	// Frame the model as a human developer describing visible work, not an agent
-	// summarizing its own mechanics. Avoids leaks like tool names, prompt labels,
-	// or our internal scaffolding (activity indexes, prior checkpoints).
+	// summarizing its own mechanics. The banned phrases and few-shot examples
+	// fix concrete regressions observed in backtests: tool-name verbs, success
+	// suffixes, file path leaks, and markdown formatting.
 	return `Write one plain-English TLDR for a Pi coding agent.
 Describe the work progress as if a human developer were doing it.
 Focus on the task activity and current outcome, not agent mechanics.
 Do not mention tools, tool calls, prompts, messages, model output, or implementation details.
+Do not start with tool-name verbs such as Read, Reading, Grep, Listing, Counting, Extracting, Displaying, Editing, Writing, Running, Publishing.
+Use human-developer verbs instead: Reviewing, Investigating, Exploring, Updating, Refining, Fixing, Implementing, Wrapping up.
+Do not use file paths, file extensions, code identifiers, package names, or version strings.
+Do not use backticks, asterisks, underscores, quotes, or any markdown formatting.
+Do not append filler suffixes such as "with success", "successfully", or "completed successfully".
+Do not claim progress or completion that is not present in the activity.
 Use the prior TLDRs for context and the new activity for the update.
 Summarize the current state of work; do not narrate the history.
 If context is sparse, still summarize the available activity.
@@ -986,7 +1037,43 @@ Prefer verb + direct object. Include outcome only if important.
 Do not address the user.
 Output only the status fragment itself. No prefixes, labels, bullets, or quotes.
 Plain text only; no markdown, JSON, code, file paths, or tool names.
+
+Good examples:
+- Reviewing footer summary behavior
+- Investigating live TLDR regressions
+- Refining sanitizer for stray prefixes
+- Wrapping up extension release
+
+Bad examples:
+- Editing extensions/status-footer.ts with success.
+- Reading status-footer file completed successfully.
+- Publishing \`pi-bar@0.3.3\` to npm.
+- Grepping for sanitizeTldrText callers.
+
 ${tenseInstruction}`;
+}
+
+function extractStopReason(message: unknown): string | undefined {
+	if (!message || typeof message !== "object") return undefined;
+	const record = message as Record<string, unknown>;
+	const stopReason = record.stopReason;
+	return typeof stopReason === "string" ? stopReason : undefined;
+}
+
+// Two TLDRs are near-duplicates if their normalized action fragments (lowercase,
+// punctuation/whitespace collapsed) match. Catches bursts of cosmetic variants
+// like "Editing X." vs "Editing X" vs "editing  x.".
+function normalizedActionFragment(text: string): string {
+	return text
+		.toLowerCase()
+		.replace(/[\p{P}\p{S}]+/gu, " ")
+		.replace(/\s+/gu, " ")
+		.trim();
+}
+
+function isNearDuplicateTldr(current: string, previous: string): boolean {
+	if (!previous) return false;
+	return normalizedActionFragment(current) === normalizedActionFragment(previous);
 }
 
 function previousCheckpointLines(checkpoints: readonly TldrCheckpoint[]): string {
@@ -1110,6 +1197,7 @@ function stripTerminalControls(text: string): string {
 const LEAKED_PREFIX_PATTERN =
 	/^\s*(?:[-*•]\s*)?(?:(?:through\s+activity|activity|checkpoint)\s+\d+\s*[:.\-—–]\s*|(?:tldr|summary)\s*[:.\-—–]\s*)+/i;
 const LEADING_PUNCT_PATTERN = /^[\s\-—–•*:#.,;]+/;
+const TRAILING_PUNCT_PATTERN = /[\s\-—–•*:#.,;]+$/;
 
 function stripLeakedScaffolding(text: string): string {
 	let cleaned = text;
@@ -1122,13 +1210,63 @@ function stripLeakedScaffolding(text: string): string {
 	return cleaned;
 }
 
+// Strip backticks (` and triple-backtick fences) and markdown emphasis markers
+// the model occasionally adds despite the prompt's plain-text rule. We keep
+// inner content verbatim; only the formatting characters disappear.
+function stripMarkdownFormatting(text: string): string {
+	return text
+		.replace(/```+/g, "")
+		.replace(/`+/g, "")
+		.replace(/(^|[^\\])([*_~]{1,3})(.+?)\2/g, "$1$3");
+}
+
+// File-path / version / package leaks observed in backtests:
+//   extensions/status-footer.ts, README.md, package.json, pi-bar@0.3.3, …
+const FILE_PATH_PATTERN =
+	/(?:\b[\w./@-]+\.(?:ts|tsx|js|jsx|mjs|cjs|md|json|yml|yaml|toml|lock|sh|py|rs|go|html|css))\b/g;
+const PACKAGE_VERSION_PATTERN = /\b[\w./@-]+@\d[\w.+-]*\b/g;
+const VERSION_PATTERN = /\bv?\d+\.\d+(?:\.\d+(?:[-+][\w.]+)?)?\b/g;
+
+function stripIdentifierLeaks(text: string): string {
+	return text
+		.replace(PACKAGE_VERSION_PATTERN, "")
+		.replace(FILE_PATH_PATTERN, "")
+		.replace(VERSION_PATTERN, "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+// Trailing filler suffixes observed in backtests:
+//   "... with success.", "... completed successfully.", "... successfully."
+const SUCCESS_SUFFIX_PATTERN =
+	/[\s,;:—–-]*(?:with\s+success|completed\s+successfully|finished\s+successfully|done\s+successfully|successfully\s+completed|successfully\s+finished|successfully)\s*[.!?]*\s*$/i;
+
+function stripSuccessSuffix(text: string): string {
+	let cleaned = text;
+	let stripped = false;
+	while (true) {
+		const next = cleaned.replace(SUCCESS_SUFFIX_PATTERN, "").trim();
+		if (next === cleaned || next.length === 0) break;
+		cleaned = next;
+		stripped = true;
+	}
+	// Only clean up trailing punctuation when an actual success suffix was
+	// removed; otherwise we would strip the natural period from a normal
+	// sentence like "Reviewing footer behavior.".
+	if (stripped) cleaned = cleaned.replace(TRAILING_PUNCT_PATTERN, "").trim();
+	return cleaned;
+}
+
 function sanitizeTldrText(
 	text: string,
 	maxChars = MAX_SAFE_TLDR_CHARS,
 ): string {
 	const stripped = stripTerminalControls(text);
-	const cleaned = stripLeakedScaffolding(stripped) || stripped;
-	return truncateText(cleaned, maxChars);
+	const withoutMarkdown = stripMarkdownFormatting(stripped);
+	const withoutScaffolding = stripLeakedScaffolding(withoutMarkdown) || withoutMarkdown;
+	const withoutLeaks = stripIdentifierLeaks(withoutScaffolding) || withoutScaffolding;
+	const withoutSuccess = stripSuccessSuffix(withoutLeaks) || withoutLeaks;
+	return truncateText(withoutSuccess, maxChars);
 }
 
 function shouldShowStatus(key: string, filter: StatusFilter): boolean {

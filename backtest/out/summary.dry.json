@@ -1,0 +1,27 @@
+[
+  {
+    "session": "2026-05-14T03-32-55-535Z_019e248b-646e-71f0-ada5-4cb44ae6f125.jsonl",
+    "checkpoints": 21,
+    "outFile": "/Users/tianrendong/pi/pi-bar/backtest/out/2026-05-14T03-32-55-535Z_019e248b-646e-71f0-ada5-4cb44ae6f125.dry.md"
+  },
+  {
+    "session": "2026-05-15T02-57-03-080Z_019e2990-e867-70af-b603-e4c1ef3381b8.jsonl",
+    "checkpoints": 19,
+    "outFile": "/Users/tianrendong/pi/pi-bar/backtest/out/2026-05-15T02-57-03-080Z_019e2990-e867-70af-b603-e4c1ef3381b8.dry.md"
+  },
+  {
+    "session": "2026-05-15T03-50-50-403Z_019e29c2-2723-764a-89db-70b50702dfd0.jsonl",
+    "checkpoints": 18,
+    "outFile": "/Users/tianrendong/pi/pi-bar/backtest/out/2026-05-15T03-50-50-403Z_019e29c2-2723-764a-89db-70b50702dfd0.dry.md"
+  },
+  {
+    "session": "2026-05-15T05-45-07-141Z_019e2a2a-c744-7354-8343-6243b3f4584d.jsonl",
+    "checkpoints": 23,
+    "outFile": "/Users/tianrendong/pi/pi-bar/backtest/out/2026-05-15T05-45-07-141Z_019e2a2a-c744-7354-8343-6243b3f4584d.dry.md"
+  },
+  {
+    "session": "2026-05-16T13-13-05-526Z_019e30eb-44f5-75d9-aecc-1c2322034748.jsonl",
+    "checkpoints": 22,
+    "outFile": "/Users/tianrendong/pi/pi-bar/backtest/out/2026-05-16T13-13-05-526Z_019e30eb-44f5-75d9-aecc-1c2322034748.dry.md"
+  }
+]
