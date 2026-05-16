@@ -3,23 +3,23 @@
 [![npm version](https://img.shields.io/npm/v/pi-bar.svg)](https://www.npmjs.com/package/pi-bar)
 [![npm downloads](https://img.shields.io/npm/dm/pi-bar.svg)](https://www.npmjs.com/package/pi-bar)
 
-**Never accidentally run Opus on a typo again.** pi-bar keeps your model, thinking level, context pressure, extension status, and a live one-line progress update visible in pi's footer.
+**Never accidentally run Opus on a typo again.** pi-bar keeps your model, thinking level, context pressure, a live progress update, and any extension statuses visible in pi's footer.
 
 ```text
-claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Inspecting package structure  ❯  plan:active
+claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure  ❯  plan:active
 ```
 
-![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.30/assets/screenshot-green.png)
-![pi-bar with medium context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.30/assets/screenshot-yellow.png)
-![pi-bar with high context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.30/assets/screenshot-red.png)
+![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.31/assets/screenshot-green.png)
+![pi-bar with medium context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.31/assets/screenshot-yellow.png)
+![pi-bar with high context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.31/assets/screenshot-red.png)
 
 ## Why use it?
 
 - **See the active model at a glance** — catch accidental model switches before an expensive or sensitive task starts.
 - **Track thinking level in place** — immediately notice when you are using the wrong reasoning setting.
 - **Watch context pressure early** — context usage turns green, yellow, then red as you approach the limit.
-- **Follow what pi is doing** — a live progress update keeps the current task visible without scrolling.
-- **Keep extension statuses visible** — statuses set with `ctx.ui.setStatus()` still appear in the custom footer.
+- **Follow what pi is doing** — a one-line progress update keeps the current task visible without scrolling.
+- **Keep extension statuses visible** — statuses other extensions set still appear in the footer.
 
 pi-bar is intentionally tiny: one small extension, no broad behavior changes, and no commands to learn. It replaces pi's built-in footer with a compact model / thinking / context / progress / extension-status line.
 
@@ -46,34 +46,31 @@ PI_BAR_SHOW=model,thinking,context,progress,extensions pi
 PI_BAR_SHOW=model,context pi
 ```
 
-Allowed segments are `model`, `thinking`, `context`, `progress`, and `extensions`. The `progress` segment is hidden until pi-bar generates a current update. The `extensions` segment is hidden when no extension has set a status.
-
-> The legacy `tldr` segment name and `PI_BAR_TLDR_MODEL` / `bar.tldrModel` settings still work and are kept as aliases for existing configs.
+Allowed segments are `model`, `thinking`, `context`, `progress`, and `extensions`. The `progress` segment stays hidden until pi-bar has a current update. The `extensions` segment stays hidden when no extension has set a status.
 
 ### Configure live progress updates
 
-pi-bar shows a concise live progress update of the current task in the footer. It generates updates from recent prompt, assistant, and deterministic code-compressed tool facts (for example `bash ... ok`, `grep ... 4 matches`, `read file`, or `custom_tool key=value ok`). It resets when you navigate the session tree so stale summaries do not follow you across branches. Set `PI_BAR_SHOW` without `progress` to hide it.
+pi-bar shows a short, plain-English description of what pi is working on right now. It refreshes as pi works and resets when you switch branches in the session tree, so stale updates never follow you across tasks. Set `PI_BAR_SHOW` without `progress` to hide it.
 
-Override the progress update model with:
+Pick a specific model for the update by setting the env var or pi settings:
 
 ```bash
 PI_BAR_PROGRESS_MODEL=anthropic/claude-haiku-4-5 pi
 ```
 
-You can also set `bar.progressModel` in pi settings.
+Or in pi settings: `bar.progressModel`. Otherwise pi-bar picks a fast model you are already authenticated with.
 
 ### Configure extension statuses
 
-pi-bar shows statuses set by other extensions with `ctx.ui.setStatus()`.
-Use `/bar` inside pi to open an interactive status-visibility picker.
+Other pi extensions can publish small status badges. Pi-bar collects them into the `extensions` segment. Run `/bar` inside pi to pick which ones to show:
 
 ```text
 /bar
 ```
 
-Toggle each status key between `shown` and `hidden`. The `New statuses` row controls whether status keys discovered later are shown or hidden by default.
+Toggle each status between `shown` and `hidden`. The `New statuses` row controls the default for badges that appear later.
 
-Status filter choices persist globally across pi sessions. Set `PI_BAR_CONFIG=/path/to/config.json` before launching pi to override the default config path (`~/.pi/agent/pi-bar.json`). Advanced command forms like `/bar status hide <key>` still work for scripting.
+Your choices persist across pi sessions in `~/.pi/agent/pi-bar.json`. Override the path with `PI_BAR_CONFIG=/some/path.json`.
 
 ### Change context thresholds
 
@@ -92,4 +89,4 @@ The first number is the warning/yellow threshold. The second number is the dange
 
 Pi extensions run with your local user permissions. Review any pi package source before installing it.
 
-Live progress update generation sends short activity snippets to the selected provider. Disable the `progress` segment with `PI_BAR_SHOW` if that is unacceptable.
+Progress updates send short snippets of your session activity to the selected model provider. Disable the `progress` segment with `PI_BAR_SHOW` if that is not acceptable.

@@ -1,18 +1,20 @@
 /**
- * pi-bar — footer/statusline extension.
+ * pi-bar — footer / statusline extension.
  *
- * Replaces the built-in footer with left-aligned segments:
- *   <model name> ❯ think:<level> ❯ <context% / window> ❯ <progress> ❯ <extension statuses>
+ * Replaces pi's built-in footer with left-aligned segments:
+ *   <model> ❯ think:<level> ❯ <context% / window> ❯ <progress> ❯ <extensions>
  *
- * Examples:
- *   claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M
+ * Example:
+ *   claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure
  *
- * Re-renders on model change, thinking-level change, status updates,
- * and after each assistant turn so context usage stays current.
+ * Re-renders on model change, thinking-level change, status updates, and after
+ * each assistant turn so context usage stays current.
  *
- * Configuration env vars:
- *   PI_BAR_SHOW=model,thinking,context,progress,extensions
- *   PI_BAR_THRESHOLDS=70,90
+ * Environment variables:
+ *   PI_BAR_SHOW           comma-separated list of segments to show
+ *   PI_BAR_THRESHOLDS     warning,danger context-usage percentages
+ *   PI_BAR_PROGRESS_MODEL provider/id for the progress update model
+ *   PI_BAR_CONFIG         override the persisted status-filter config path
  */
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
