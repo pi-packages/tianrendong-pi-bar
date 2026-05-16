@@ -76,9 +76,6 @@ type FastModelAuth = {
 
 const STATUS_FILTER_ENTRY_TYPE = "pi-bar-status-filter";
 const SETTINGS_PROGRESS_KEY = "progress";
-// Legacy settings/env names. The `tldr` keys remain accepted so existing user
-// configs continue to work after the rename to "progress updates".
-const LEGACY_SETTINGS_TLDR_KEY = "tldr";
 const SETTINGS_BAR_KEY = "bar";
 const MAX_ACTIVITY_TEXT_CHARS = 800;
 const MAX_USER_TEXT_CHARS = 700;
@@ -173,12 +170,9 @@ function parseSegments(): SegmentName[] {
 	const raw = process.env.PI_BAR_SHOW;
 	if (!raw) return DEFAULT_SEGMENTS;
 
-	// `tldr` is the legacy segment name, kept working as an alias so existing
-	// PI_BAR_SHOW configs do not break after the rename to "progress".
 	const requested = raw
 		.split(",")
 		.map((segment) => segment.trim().toLowerCase())
-		.map((segment) => (segment === "tldr" ? "progress" : segment))
 		.filter((segment): segment is SegmentName =>
 			["model", "thinking", "context", "progress", "extensions"].includes(segment),
 		);
@@ -225,11 +219,8 @@ function parseProgressModelSpec(value: string): ProgressModelPreference | undefi
 function settingsModelValue(settings: Record<string, unknown>): string | undefined {
 	const bar = settings[SETTINGS_BAR_KEY];
 	if (bar && typeof bar === "object" && !Array.isArray(bar)) {
-		const record = bar as Record<string, unknown>;
-		// Canonical key after rename. Falls through to legacy `tldrModel` so old
-		// settings still work without manual migration.
-		if (typeof record.progressModel === "string") return record.progressModel;
-		if (typeof record.tldrModel === "string") return record.tldrModel;
+		const value = (bar as Record<string, unknown>).progressModel;
+		if (typeof value === "string") return value;
 	}
 
 	const progressSection = settings[SETTINGS_PROGRESS_KEY];
@@ -238,20 +229,11 @@ function settingsModelValue(settings: Record<string, unknown>): string | undefin
 		if (typeof value === "string") return value;
 	}
 
-	const legacy = settings[LEGACY_SETTINGS_TLDR_KEY];
-	if (legacy && typeof legacy === "object" && !Array.isArray(legacy)) {
-		const value = (legacy as Record<string, unknown>).model;
-		if (typeof value === "string") return value;
-	}
-
 	return undefined;
 }
 
 function resolveProgressModelPreference(cwd: string): ProgressModelPreference | undefined {
-	// PI_BAR_PROGRESS_MODEL is the canonical env var. PI_BAR_TLDR_MODEL is
-	// honored as a backwards-compat alias for users who set it before the
-	// rename.
-	const envModel = process.env.PI_BAR_PROGRESS_MODEL ?? process.env.PI_BAR_TLDR_MODEL;
+	const envModel = process.env.PI_BAR_PROGRESS_MODEL;
 	if (envModel) return parseProgressModelSpec(envModel);
 
 	const settings = SettingsManager.create(cwd);
