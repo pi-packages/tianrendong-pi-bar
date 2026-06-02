@@ -19,7 +19,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/tianrendong/pi-bar.git"
+    "url": "git+https://github.com/tianrendong/pi-bar.git"
   },
   "bugs": {
     "url": "https://github.com/tianrendong/pi-bar/issues"
